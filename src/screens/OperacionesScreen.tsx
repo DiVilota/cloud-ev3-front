@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { LogPanel } from '../components/LogPanel'
 import { PageHeader } from '../components/Shell'
 import { Badge, Bar, Button, Card, Empty, Field, Input, Metric, Notice, Table } from '../components/ui'
@@ -13,9 +13,19 @@ import type { Metricas, ResumenAlertas } from '../lib/types'
 
 type Fuente = 'nada' | 'poll' | 'ws'
 
+/* Lectura periódica fija: el tablero se refresca cada 5 s. Si un servicio falla,
+   usePolling aplica su espera creciente y se rinde tras varios fallos seguidos. */
+const INTERVALO_MS = 5000
+
+/* Minutos que se muestran en la serie: los últimos 15. */
+const VENTANA_MINUTOS = 15
+
+const hora = (ms: number) =>
+  new Date(ms).toLocaleTimeString('es-CL', { hour12: false, hour: '2-digit', minute: '2-digit' })
+
 export function OperacionesScreen() {
   const [url, setUrl] = useState(WS_URL)
-  const [fuente, setFuente] = useState<Fuente>('nada')
+  const [fuente, setFuente] = useState<Fuente>('poll')
   const [metricas, setMetricas] = useState<Metricas | null>(null)
   const [alertas, setAlertas] = useState<ResumenAlertas | null>(null)
   const { lineas, log, limpiar } = useLog()
@@ -62,20 +72,30 @@ export function OperacionesScreen() {
     }
   }, [registrarFallo])
 
-  const poll = usePolling({ tarea: leerDeServicios, onAviso: log })
+  const poll = usePolling({ tarea: leerDeServicios, base: INTERVALO_MS, max: INTERVALO_MS, onAviso: log })
+
+  /* Arranca la lectura al entrar a la pantalla. */
+  useEffect(() => {
+    log(`leyendo de :8084/api/metricas y :8083/api/alertas cada ${INTERVALO_MS / 1000} s`, 'ok')
+    poll.iniciar()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
   /* El broadcast de la Lambda llega como ARRAY de lecturas (envío por lotes),
      no de una en una, y cada elemento puede ser métricas o alerta. */
-  const recibirLote = useCallback((payload: unknown) => {
-    const lote = Array.isArray(payload) ? payload : [payload]
-    for (const ev of lote) {
-      if (!ev || typeof ev !== 'object') continue
-      const o = ev as Record<string, unknown>
-      if (o.tipo === 'metricas' || 'productosMasVistos' in o) setMetricas(o as unknown as Metricas)
-      else if (o.tipo === 'alerta' || 'bloqueosActivos' in o) setAlertas(o as unknown as ResumenAlertas)
-      else log(`evento de tipo desconocido: ${JSON.stringify(o).slice(0, 90)}`)
-    }
-  }, [log])
+  const recibirLote = useCallback(
+    (payload: unknown) => {
+      const lote = Array.isArray(payload) ? payload : [payload]
+      for (const ev of lote) {
+        if (!ev || typeof ev !== 'object') continue
+        const o = ev as Record<string, unknown>
+        if (o.tipo === 'metricas' || 'embudo' in o || 'productosMasVistos' in o) setMetricas(o as unknown as Metricas)
+        else if (o.tipo === 'alerta' || 'bloqueosActivos' in o) setAlertas(o as unknown as ResumenAlertas)
+        else log(`evento de tipo desconocido: ${JSON.stringify(o).slice(0, 90)}`)
+      }
+    },
+    [log],
+  )
 
   const ws = useWebSocket({ onMensaje: recibirLote, onAviso: log })
 
@@ -102,7 +122,7 @@ export function OperacionesScreen() {
     ws.desconectar()
     ultimoError.current = {}
     setFuente('poll')
-    log('leyendo de :8084/api/metricas y :8083/api/alertas, con espera creciente si fallan', 'ok')
+    log(`leyendo de los servicios cada ${INTERVALO_MS / 1000} s`, 'ok')
     poll.iniciar()
   }
 
@@ -127,8 +147,18 @@ export function OperacionesScreen() {
     }
   }, [ws.estado])
 
-  const vistos = metricas?.productosMasVistos ?? []
-  const maxVistas = vistos.length > 0 ? Math.max(...vistos.map((v) => v.vistas)) : 0
+  /* topProductos es el campo nuevo; productosMasVistos queda como respaldo. */
+  const topProductos = metricas?.topProductos ?? metricas?.productosMasVistos ?? []
+  const maxVistas = topProductos.length > 0 ? Math.max(...topProductos.map((v) => v.vistas)) : 0
+
+  const embudo = metricas?.embudo
+  const maxEmbudo = embudo ? Math.max(embudo.vistas, embudo.carritos, embudo.compras) : 0
+
+  const serie = useMemo(() => (metricas?.serieMinutos ?? []).slice(-VENTANA_MINUTOS), [metricas])
+  const maxSerie = serie.length > 0 ? Math.max(...serie.map((s) => s.interacciones)) : 0
+
+  const porTipo = Object.entries(metricas?.porTipo ?? {})
+  const maxPorTipo = porTipo.length > 0 ? Math.max(...porTipo.map(([, v]) => v)) : 0
 
   const etiquetaFuente =
     fuente === 'ws'
@@ -154,7 +184,7 @@ export function OperacionesScreen() {
     <div className="stack">
       <PageHeader
         titulo="Operaciones en tiempo real"
-        bajada="Pulso de la tienda: qué se mira, cuánto se mueve y qué se bloquea. Los datos llegan empujados por API Gateway o se leen directo de los microservicios."
+        bajada="Pulso de la tienda: qué se mira, cuánto se mueve y qué se bloquea. Se lee de los microservicios cada 5 s o llega empujado por API Gateway."
         accion={<Badge estado={estadoFuente}>{etiquetaFuente}</Badge>}
       />
 
@@ -210,12 +240,56 @@ export function OperacionesScreen() {
       </div>
 
       <div className="grid-2">
-        <Card titulo="Productos más vistos" descripcion="Agregado por el consumidor de interacciones-user.">
-          {vistos.length === 0 ? (
+        <Card titulo="Embudo" descripcion="Vistas → carritos → compras, de GET /api/metricas.">
+          {!embudo ? (
+            <Empty>Sin datos. Leé de los servicios o conectá el WebSocket.</Empty>
+          ) : (
+            <Table cols={['Etapa', { t: 'Cantidad', num: true }, '']}>
+              {(
+                [
+                  ['Vistas', embudo.vistas],
+                  ['Carritos', embudo.carritos],
+                  ['Compras', embudo.compras],
+                ] as const
+              ).map(([etapa, cantidad]) => (
+                <tr key={etapa}>
+                  <td>{etapa}</td>
+                  <td className="num">{num(cantidad)}</td>
+                  <td style={{ width: '50%' }}>
+                    <Bar valor={cantidad} max={maxEmbudo} />
+                  </td>
+                </tr>
+              ))}
+            </Table>
+          )}
+        </Card>
+
+        <Card titulo="Interacciones por minuto" descripcion={`Últimos ${VENTANA_MINUTOS} minutos, de serieMinutos.`}>
+          {serie.length === 0 ? (
+            <Empty>Sin actividad registrada todavía.</Empty>
+          ) : (
+            <Table cols={['Minuto', { t: 'Interacciones', num: true }, '']}>
+              {serie.map((s) => (
+                <tr key={s.inicio}>
+                  <td className="mono">{hora(s.inicio)}</td>
+                  <td className="num">{num(s.interacciones)}</td>
+                  <td style={{ width: '50%' }}>
+                    <Bar valor={s.interacciones} max={maxSerie} />
+                  </td>
+                </tr>
+              ))}
+            </Table>
+          )}
+        </Card>
+      </div>
+
+      <div className="grid-2">
+        <Card titulo="Top de productos" descripcion="topProductos: agregado por el consumidor de interacciones-user.">
+          {topProductos.length === 0 ? (
             <Empty>Sin datos. Conectá el WebSocket o leé de los servicios.</Empty>
           ) : (
             <Table cols={['Producto', 'Categoría', { t: 'Interacciones', num: true }, '']}>
-              {vistos.map((p) => (
+              {topProductos.map((p) => (
                 <tr key={p.itemId}>
                   <td>
                     <strong style={{ fontWeight: 510, color: 'var(--ink)' }}>{p.nombre || p.itemId}</strong>
@@ -231,23 +305,42 @@ export function OperacionesScreen() {
           )}
         </Card>
 
-        <Card titulo="Alertas de fraude" descripcion="Clientes bloqueados por la regla de velocidad de intentos.">
-          {!alertas || alertas.alertas.length === 0 ? (
-            <Empty>Sin bloqueos vigentes.</Empty>
+        <Card titulo="Por tipo de interacción" descripcion="porTipo: conteo por acción registrada.">
+          {porTipo.length === 0 ? (
+            <Empty>Sin interacciones registradas.</Empty>
           ) : (
-            <Table cols={['Cliente', { t: 'Intentos', num: true }, { t: 'Expira en', num: true }, 'Detectado']}>
-              {alertas.alertas.map((a) => (
-                <tr key={a.idCliente}>
-                  <td className="mono">{a.idCliente}</td>
-                  <td className="num">{a.cantidadIntentos}</td>
-                  <td className="num">{a.minutosRestantes > 0 ? `${a.minutosRestantes} min` : '—'}</td>
-                  <td className="mono muted">{fechaHora(a.actualizadoEn)}</td>
+            <Table cols={['Tipo', { t: 'Cantidad', num: true }, '']}>
+              {porTipo.map(([tipo, cantidad]) => (
+                <tr key={tipo}>
+                  <td className="mono">{tipo}</td>
+                  <td className="num">{num(cantidad)}</td>
+                  <td style={{ width: '50%' }}>
+                    <Bar valor={cantidad} max={maxPorTipo} />
+                  </td>
                 </tr>
               ))}
             </Table>
           )}
         </Card>
       </div>
+
+      <Card titulo="Alertas de fraude" descripcion="Tarjetas bloqueadas por la regla de velocidad de intentos (GET /api/alertas).">
+        {!alertas || alertas.alertas.length === 0 ? (
+          <Empty>Sin bloqueos vigentes.</Empty>
+        ) : (
+          <Table cols={['Tarjeta', 'Cliente', { t: 'Intentos', num: true }, { t: 'Expira en', num: true }, 'Detectado']}>
+            {alertas.alertas.map((a) => (
+              <tr key={`${a.huellaTarjeta ?? ''}-${a.idCliente}`}>
+                <td className="mono">{a.ultimos4 ? `****${a.ultimos4}` : (a.huellaTarjeta ?? '—')}</td>
+                <td className="mono">{a.idCliente}</td>
+                <td className="num">{a.cantidadIntentos}</td>
+                <td className="num">{a.minutosRestantes > 0 ? `${a.minutosRestantes} min` : '—'}</td>
+                <td className="mono muted">{fechaHora(a.actualizadoEn)}</td>
+              </tr>
+            ))}
+          </Table>
+        )}
+      </Card>
 
       <LogPanel lineas={lineas} onLimpiar={limpiar} />
     </div>

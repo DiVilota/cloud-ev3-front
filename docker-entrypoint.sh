@@ -10,6 +10,9 @@
 #   API_PAGOS            http://localhost:8083
 #   API_RECOMENDACIONES  http://localhost:8084
 #   API_ADMIN            http://localhost:8085
+#   API_PRODUCTOS        http://localhost:8086
+#   API_RABBIT           http://localhost:8089
+#   API_NOTIFICACIONES   http://localhost:8088
 #   WS_URL               (vacio: el tablero cae a leer de los servicios)
 #
 # En AWS, con API Gateway delante, las tres apuntan a la misma base y se
@@ -27,6 +30,9 @@ window.PEDIDOS360_CONFIG = {
   pagos:           "${API_PAGOS:-http://localhost:8083}",
   recomendaciones: "${API_RECOMENDACIONES:-http://localhost:8084}",
   admin:           "${API_ADMIN:-http://localhost:8085}",
+  productos:       "${API_PRODUCTOS:-http://localhost:8086}",
+  rabbit:          "${API_RABBIT:-http://localhost:8089}",
+  notificaciones:  "${API_NOTIFICACIONES:-http://localhost:8088}",
   ws:              "${WS_URL:-}"
 };
 EOF

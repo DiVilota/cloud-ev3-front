@@ -4,6 +4,7 @@ import { CallbackScreen } from './screens/CallbackScreen'
 import { KafkaScreen } from './screens/KafkaScreen'
 import { OperacionesScreen } from './screens/OperacionesScreen'
 import { PagosScreen } from './screens/PagosScreen'
+import { RabbitScreen } from './screens/RabbitScreen'
 import { RecomendacionesScreen } from './screens/RecomendacionesScreen'
 
 export function App() {
@@ -18,6 +19,7 @@ export function App() {
         <Route path="/recomendaciones" element={<RecomendacionesScreen />} />
         <Route path="/operaciones" element={<OperacionesScreen />} />
         <Route path="/kafka" element={<KafkaScreen />} />
+        <Route path="/rabbit" element={<RabbitScreen />} />
         <Route path="*" element={<Navigate to="/pagos" replace />} />
       </Route>
     </Routes>

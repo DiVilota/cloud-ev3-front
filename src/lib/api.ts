@@ -6,9 +6,16 @@ import type {
   ConsumerGroupLag,
   CrearTopicoRequest,
   Interaccion,
+  ConfiguracionTopico,
   Metricas,
+  NotificacionFallida,
   PeticionPago,
+  ProductoCatalogo,
   ProductoEnriquecido,
+  RabbitBinding,
+  RabbitCluster,
+  RabbitCola,
+  RabbitExchange,
   RespuestaIniciarPago,
   ResumenAlertas,
   Topico,
@@ -109,6 +116,7 @@ export const pagos = {
   },
 
   alertas: () => pedir<ResumenAlertas>(`${API.pagos}/api/alertas`),
+  resetAlertas: () => pedir<string>(`${API.pagos}/api/alertas`, { method: 'DELETE' }),
 }
 
 /* ================== ms-recomendaciones :8084 ================== */
@@ -133,4 +141,43 @@ export const admin = {
     pedir<string>(`${API.admin}/api/topicos/${encodeURIComponent(nombre)}`, { method: 'DELETE' }),
   consumerGroups: () => pedir<ConsumerGroup[]>(`${API.admin}/api/consumer-groups`),
   lag: (id: string) => pedir<ConsumerGroupLag>(`${API.admin}/api/consumer-groups/${encodeURIComponent(id)}/lag`),
+  editarConfiguracion: (nombre: string, config: Partial<ConfiguracionTopico>) =>
+    pedir<string>(`${API.admin}/api/topicos/${encodeURIComponent(nombre)}/configuracion`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(config),
+    }),
+  aumentarParticiones: (nombre: string, cantidad: number) =>
+    pedir<string>(`${API.admin}/api/topicos/${encodeURIComponent(nombre)}/particiones?cantidad=${cantidad}`, {
+      method: 'PUT',
+    }),
+  resetOffsets: (id: string, topico: string) =>
+    pedir<string>(
+      `${API.admin}/api/consumer-groups/${encodeURIComponent(id)}/reset-offsets?topico=${encodeURIComponent(topico)}`,
+      { method: 'PUT' },
+    ),
+  eliminarGrupo: (id: string) =>
+    pedir<string>(`${API.admin}/api/consumer-groups/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+}
+
+/* ===================== ms-productos :8086 ===================== */
+export const productos = {
+  listar: () => pedir<ProductoCatalogo[]>(`${API.productos}/api/productos`),
+}
+
+/* ===================== ms-rabbit-admin :8089 ===================== */
+export const rabbit = {
+  cluster: () => pedir<RabbitCluster>(`${API.rabbit}/api/rabbit/cluster`),
+  colas: () => pedir<RabbitCola[]>(`${API.rabbit}/api/rabbit/colas`),
+  exchanges: () => pedir<RabbitExchange[]>(`${API.rabbit}/api/rabbit/exchanges`),
+  bindings: () => pedir<RabbitBinding[]>(`${API.rabbit}/api/rabbit/bindings`),
+  crearCola: (req: { nombre: string; tipo?: string; durable?: boolean }) =>
+    pedir<string>(`${API.rabbit}/api/rabbit/colas`, json(req)),
+  eliminarCola: (nombre: string) =>
+    pedir<string>(`${API.rabbit}/api/rabbit/colas/${encodeURIComponent(nombre)}`, { method: 'DELETE' }),
+}
+
+/* ===================== ms-notificaciones :8088 ===================== */
+export const notificaciones = {
+  fallidas: () => pedir<NotificacionFallida[]>(`${API.notificaciones}/api/notificaciones/fallidas`),
 }

@@ -35,6 +35,15 @@ export function KafkaScreen() {
   const [replicas, setReplicas] = useState('3')
   const [creando, setCreando] = useState(false)
 
+  /* edición del tópico con detalle abierto */
+  const [cfgForm, setCfgForm] = useState({ retentionMs: '', cleanupPolicy: '', minInsyncReplicas: '' })
+  const [guardandoCfg, setGuardandoCfg] = useState(false)
+  const [nuevasParticiones, setNuevasParticiones] = useState('')
+
+  /* reset de offsets desde el desfase abierto */
+  const [topicoReset, setTopicoReset] = useState('')
+  const [reseteando, setReseteando] = useState(false)
+
   const cargar = useCallback(async () => {
     setCargando(true)
     setError(null)
@@ -70,6 +79,12 @@ export function KafkaScreen() {
     try {
       const d = await admin.topico(nombreTopico)
       setDetalle(d)
+      setCfgForm({
+        retentionMs: d.configuracion?.retentionMs ?? '',
+        cleanupPolicy: d.configuracion?.cleanupPolicy ?? '',
+        minInsyncReplicas: d.configuracion?.minInsyncReplicas ?? '',
+      })
+      setNuevasParticiones(String(d.particiones + 1))
       log(`GET /api/topicos/${nombreTopico} → ${d.particionesDetalle?.length ?? 0} partición(es)`, 'ok')
     } catch (e) {
       setError((e as Error).message)
@@ -117,6 +132,90 @@ export function KafkaScreen() {
       log(`error al crear ${n}: ${(e as Error).message}`, 'error')
     } finally {
       setCreando(false)
+    }
+  }
+
+  async function guardarConfiguracion() {
+    if (!detalle) return
+    setGuardandoCfg(true)
+    setError(null)
+    setOk(null)
+    const cambios = {
+      retentionMs: cfgForm.retentionMs.trim(),
+      cleanupPolicy: cfgForm.cleanupPolicy.trim(),
+      minInsyncReplicas: cfgForm.minInsyncReplicas.trim(),
+    }
+    try {
+      await admin.editarConfiguracion(detalle.nombre, cambios)
+      setOk(`Configuración de ${detalle.nombre} actualizada.`)
+      log(`PUT /api/topicos/${detalle.nombre}/configuracion  ${JSON.stringify(cambios)}`, 'ok')
+      await verDetalle(detalle.nombre)
+    } catch (e) {
+      setError((e as Error).message)
+      log(`error al editar ${detalle.nombre}: ${(e as Error).message}`, 'error')
+    } finally {
+      setGuardandoCfg(false)
+    }
+  }
+
+  /* Kafka sólo permite AUMENTAR particiones: un valor igual o menor se rechaza
+     antes de viajar, para no confundir con un error del clúster. */
+  async function ampliarParticiones() {
+    if (!detalle) return
+    const n = Number(nuevasParticiones)
+    if (!Number.isInteger(n) || n <= detalle.particiones) {
+      setError(`La cantidad debe ser un entero mayor que ${detalle.particiones} (actual).`)
+      return
+    }
+    if (!window.confirm(`¿Subir ${detalle.nombre} de ${detalle.particiones} a ${n} particiones? Kafka no permite bajarlas después.`))
+      return
+    setError(null)
+    setOk(null)
+    try {
+      await admin.aumentarParticiones(detalle.nombre, n)
+      setOk(`${detalle.nombre} ahora tiene ${n} particiones.`)
+      log(`PUT /api/topicos/${detalle.nombre}/particiones?cantidad=${n}`, 'ok')
+      await verDetalle(detalle.nombre)
+      await cargar()
+    } catch (e) {
+      setError((e as Error).message)
+      log(`error al aumentar particiones de ${detalle.nombre}: ${(e as Error).message}`, 'error')
+    }
+  }
+
+  async function eliminarGrupo(grupo: string) {
+    if (!window.confirm(`¿Eliminar el grupo de consumo ${grupo}? Se pierden sus offsets confirmados.`)) return
+    setError(null)
+    setOk(null)
+    try {
+      await admin.eliminarGrupo(grupo)
+      setOk(`Grupo ${grupo} eliminado.`)
+      log(`DELETE /api/consumer-groups/${grupo}`, 'ok')
+      if (lag?.groupId === grupo) setLag(null)
+      await cargar()
+    } catch (e) {
+      setError((e as Error).message)
+      log(`error al eliminar el grupo ${grupo}: ${(e as Error).message}`, 'error')
+    }
+  }
+
+  async function resetearOffsets(grupo: string, topico: string) {
+    if (!topico) return
+    if (!window.confirm(`¿Reiniciar los offsets de ${grupo} en ${topico}? El grupo volverá a leer desde el principio.`))
+      return
+    setReseteando(true)
+    setError(null)
+    setOk(null)
+    try {
+      await admin.resetOffsets(grupo, topico)
+      setOk(`Offsets de ${grupo} en ${topico} reiniciados.`)
+      log(`PUT /api/consumer-groups/${grupo}/reset-offsets?topico=${topico}`, 'ok')
+      await verLag(grupo)
+    } catch (e) {
+      setError((e as Error).message)
+      log(`error al reiniciar offsets de ${grupo}: ${(e as Error).message}`, 'error')
+    } finally {
+      setReseteando(false)
     }
   }
 
@@ -248,6 +347,44 @@ export function KafkaScreen() {
             </div>
           </div>
 
+          <div className="row" style={{ marginTop: 'var(--s4)', alignItems: 'flex-end' }}>
+            <Field etiqueta="cleanup.policy" ancho={170}>
+              <Input
+                value={cfgForm.cleanupPolicy}
+                onChange={(e) => setCfgForm({ ...cfgForm, cleanupPolicy: e.target.value })}
+                placeholder="delete"
+              />
+            </Field>
+            <Field etiqueta="retention.ms" ancho={170}>
+              <Input
+                value={cfgForm.retentionMs}
+                onChange={(e) => setCfgForm({ ...cfgForm, retentionMs: e.target.value })}
+              />
+            </Field>
+            <Field etiqueta="min.insync.replicas" ancho={170}>
+              <Input
+                value={cfgForm.minInsyncReplicas}
+                onChange={(e) => setCfgForm({ ...cfgForm, minInsyncReplicas: e.target.value })}
+              />
+            </Field>
+            <Button variante="primario" onClick={() => void guardarConfiguracion()} disabled={guardandoCfg}>
+              {guardandoCfg ? <Spinner /> : null}
+              Guardar configuración
+            </Button>
+          </div>
+
+          <div className="row" style={{ marginTop: 'var(--s4)', alignItems: 'flex-end' }}>
+            <Field etiqueta="Particiones nuevas" ancho={170} hint={`actualmente ${detalle.particiones}`}>
+              <Input
+                type="number"
+                min={detalle.particiones + 1}
+                value={nuevasParticiones}
+                onChange={(e) => setNuevasParticiones(e.target.value)}
+              />
+            </Field>
+            <Button onClick={() => void ampliarParticiones()}>Aumentar particiones</Button>
+          </div>
+
           <div style={{ marginTop: 'var(--s4)', marginLeft: 'calc(var(--s4) * -1)', marginRight: 'calc(var(--s4) * -1)', marginBottom: 'calc(var(--s4) * -1)' }}>
             <Table
               cols={[{ t: 'Partición', num: true }, { t: 'Líder', num: true }, 'Réplicas', 'ISR', 'Estado']}
@@ -320,7 +457,12 @@ export function KafkaScreen() {
                 <td className="num">{g.cantidadMiembros}</td>
                 <td className="mono muted">{g.topicos?.join(', ') || '—'}</td>
                 <td className="num">
-                  <Button onClick={() => void verLag(g.id)}>Ver desfase</Button>
+                  <div className="row" style={{ justifyContent: 'flex-end', gap: 'var(--s2)' }}>
+                    <Button onClick={() => void verLag(g.id)}>Ver desfase</Button>
+                    <Button variante="peligro" disabled={g.cantidadMiembros > 0} onClick={() => void eliminarGrupo(g.id)}>
+                      Eliminar
+                    </Button>
+                  </div>
                 </td>
               </tr>
             ))}
@@ -337,6 +479,38 @@ export function KafkaScreen() {
               <Badge estado={lag.lagTotal === 0 ? 'ok' : lag.lagTotal > 100 ? 'bad' : 'warn'}>
                 lag total {num(lag.lagTotal)}
               </Badge>
+              {(() => {
+                const grupo = grupos?.find((g) => g.id === lag.groupId)
+                const activo = grupo ? grupo.cantidadMiembros > 0 || grupo.estado.toUpperCase() === 'STABLE' : true
+                const topicosGrupo = grupo?.topicos ?? []
+                const topicoElegido = topicoReset || topicosGrupo[0] || ''
+                return (
+                  <>
+                    <select
+                      className="input"
+                      value={topicoElegido}
+                      onChange={(e) => setTopicoReset(e.target.value)}
+                      disabled={activo || topicosGrupo.length === 0}
+                      aria-label="Tópico para reiniciar offsets"
+                    >
+                      {topicosGrupo.map((t) => (
+                        <option key={t} value={t}>
+                          {t}
+                        </option>
+                      ))}
+                    </select>
+                    <Button
+                      variante="peligro"
+                      disabled={activo || reseteando || !topicoElegido}
+                      title={activo ? 'Sólo se reinicia un grupo sin miembros activos' : undefined}
+                      onClick={() => void resetearOffsets(lag.groupId, topicoElegido)}
+                    >
+                      {reseteando ? <Spinner /> : null}
+                      Reiniciar offsets
+                    </Button>
+                  </>
+                )
+              })()}
               <Button onClick={() => setLag(null)}>Cerrar</Button>
             </div>
           }

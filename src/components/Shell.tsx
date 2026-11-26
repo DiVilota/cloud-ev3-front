@@ -10,6 +10,7 @@ const NAV: Entrada[] = [
   { a: '/recomendaciones', etiqueta: 'Recomendaciones', puerto: ':8084', servicio: 'recomendaciones' },
   { a: '/operaciones', etiqueta: 'Operaciones', puerto: 'wss', servicio: null },
   { a: '/kafka', etiqueta: 'Kafka', puerto: ':8085', servicio: 'admin' },
+  { a: '/rabbit', etiqueta: 'RabbitMQ', puerto: ':8089', servicio: null },
 ]
 
 export function Shell() {
@@ -28,6 +29,7 @@ export function Shell() {
   }
 
   const estados = Object.values(salud)
+  const total = estados.length
   const sanos = estados.filter((v) => v === 'arriba').length
   const degradados = estados.filter((v) => v === 'degradado').length
   const resueltos = estados.filter((v) => v !== null).length
@@ -63,8 +65,8 @@ export function Shell() {
             {resueltos === 0
               ? 'comprobando…'
               : degradados > 0
-                ? `${sanos} de 3 sanos · ${degradados} degradado${degradados > 1 ? 's' : ''}`
-                : `${sanos} de 3 sanos`}
+                ? `${sanos} de ${total} sanos · ${degradados} degradado${degradados > 1 ? 's' : ''}`
+                : `${sanos} de ${total} sanos`}
           </span>
         </div>
       </nav>

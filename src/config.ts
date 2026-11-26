@@ -4,6 +4,9 @@ type RuntimeConfig = {
   pagos?: string
   recomendaciones?: string
   admin?: string
+  productos?: string
+  rabbit?: string
+  notificaciones?: string
   ws?: string
 }
 
@@ -19,6 +22,9 @@ export const API = {
   pagos: cfg.pagos ?? 'http://localhost:8083',
   recomendaciones: cfg.recomendaciones ?? 'http://localhost:8084',
   admin: cfg.admin ?? 'http://localhost:8085',
+  productos: cfg.productos ?? 'http://localhost:8086',
+  rabbit: cfg.rabbit ?? 'http://localhost:8089',
+  notificaciones: cfg.notificaciones ?? 'http://localhost:8088',
 }
 
 export const WS_URL = cfg.ws ?? ''

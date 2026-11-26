@@ -1,12 +1,23 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { LogPanel } from '../components/LogPanel'
 import { PageHeader } from '../components/Shell'
 import { Badge, Bar, Button, Card, Empty, Field, Input, Notice, Spinner, Table } from '../components/ui'
 import { useLog } from '../hooks/useLog'
-import { recomendaciones } from '../lib/api'
-import { ACCIONES, ITEMS, clasificar } from '../lib/catalogo'
+import { productos, recomendaciones } from '../lib/api'
 import { clp } from '../lib/format'
-import type { ProductoEnriquecido } from '../lib/types'
+import type { ProductoCatalogo, ProductoEnriquecido } from '../lib/types'
+
+/* Pesos de cada acción. El consumidor en ms-recomendaciones es quien los aplica;
+   acá solo se muestran para que la pantalla explique qué suma cada acción. */
+const ACCIONES = [
+  { id: 'view', etiqueta: 'Ver', peso: 1 },
+  { id: 'cart', etiqueta: 'Carrito', peso: 2 },
+  { id: 'purchase', etiqueta: 'Comprar', peso: 3 },
+] as const
+
+/* Si el producto no está en el catálogo (se tipeó a mano), la interacción va con
+   estos valores, igual que antes de leer el catálogo desde ms-productos. */
+const CLASIFICACION_DESCONOCIDA = { categoria: 'general', subcategoria: 'standard' }
 
 /* El consumidor recalcula el ranking de forma asíncrona: si se consulta el Top
    inmediatamente después de publicar, todavía devuelve el valor viejo. 1,2 s es
@@ -16,11 +27,25 @@ const ESPERA_RECALCULO_MS = 1200
 export function RecomendacionesScreen() {
   const [usuario, setUsuario] = useState('user_test_1')
   const [item, setItem] = useState('item_116')
+  const [catalogo, setCatalogo] = useState<ProductoCatalogo[]>([])
   const [top, setTop] = useState<ProductoEnriquecido[] | null>(null)
   const [cargando, setCargando] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [enviando, setEnviando] = useState<string | null>(null)
   const { lineas, log, limpiar } = useLog()
+
+  const productoPorId = useMemo(() => new Map(catalogo.map((p) => [p.id, p])), [catalogo])
+  const productoActual = productoPorId.get(item.trim())
+
+  const cargarCatalogo = useCallback(async () => {
+    try {
+      const datos = await productos.listar()
+      setCatalogo(datos)
+      log(`GET /api/productos → ${datos.length} producto(s) en el catálogo`, 'ok')
+    } catch (e) {
+      log(`catálogo: ${(e as Error).message}`, 'error')
+    }
+  }, [log])
 
   const cargarTop = useCallback(
     async (silencioso = false) => {
@@ -43,6 +68,7 @@ export function RecomendacionesScreen() {
   )
 
   useEffect(() => {
+    void cargarCatalogo()
     void cargarTop()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
@@ -54,7 +80,7 @@ export function RecomendacionesScreen() {
       setError('Usuario y producto son obligatorios.')
       return
     }
-    const { categoria, tipo } = clasificar(prod)
+    const { categoria, subcategoria } = productoPorId.get(prod) ?? CLASIFICACION_DESCONOCIDA
     setEnviando(accion)
     try {
       await recomendaciones.interactuar({
@@ -62,9 +88,9 @@ export function RecomendacionesScreen() {
         itemId: prod,
         action: accion as 'view' | 'cart' | 'purchase',
         category: categoria,
-        productType: tipo,
+        productType: subcategoria,
       })
-      log(`POST /api/interacciones  ${accion}(+${peso}) ${prod} [${categoria}/${tipo}]`, 'ok')
+      log(`POST /api/interacciones  ${accion}(+${peso}) ${prod} [${categoria}/${subcategoria}]`, 'ok')
       setError(null)
       setTimeout(() => void cargarTop(true), ESPERA_RECALCULO_MS)
     } catch (e) {
@@ -98,11 +124,23 @@ export function RecomendacionesScreen() {
           <Field etiqueta="clientId" ancho={190}>
             <Input value={usuario} onChange={(e) => setUsuario(e.target.value)} placeholder="user_test_1" />
           </Field>
-          <Field etiqueta="itemId" ancho={190} hint={`${clasificar(item).categoria} / ${clasificar(item).tipo}`}>
+          <Field
+            etiqueta="itemId"
+            ancho={190}
+            hint={
+              productoActual
+                ? `${productoActual.categoria} / ${productoActual.subcategoria}`
+                : catalogo.length === 0
+                  ? 'catálogo sin cargar'
+                  : 'no está en el catálogo'
+            }
+          >
             <Input value={item} onChange={(e) => setItem(e.target.value)} list="items-catalogo" />
             <datalist id="items-catalogo">
-              {ITEMS.map((i) => (
-                <option key={i} value={i} />
+              {catalogo.map((p) => (
+                <option key={p.id} value={p.id}>
+                  {p.nombre}
+                </option>
               ))}
             </datalist>
           </Field>
@@ -175,6 +213,7 @@ export function RecomendacionesScreen() {
                     <span>
                       <strong>{p.nombre || p.itemId}</strong>
                       <small className="mono muted">{p.itemId}</small>
+                      {p.motivo && <small className="muted">{p.motivo}</small>}
                     </span>
                   </div>
                 </td>

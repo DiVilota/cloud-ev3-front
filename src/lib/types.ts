@@ -20,6 +20,8 @@ export type PeticionPago = {
   clientId: string
   amount: number
   transactionId: string
+  /* Solo en el modo simulado: número de tarjeta de prueba. */
+  tarjeta?: string
 }
 
 /* PagosController responde un Map, no el DTO: {url, token} o {message} o {error} */
@@ -32,6 +34,10 @@ export type RespuestaIniciarPago = {
 
 export type AlertaFraude = {
   idCliente: string
+  /* El antifraude cuenta por tarjeta: huellaTarjeta identifica la tarjeta sin
+     exponer el número, y ultimos4 es lo único que se muestra al operador. */
+  huellaTarjeta?: string
+  ultimos4?: string | null
   cantidadIntentos: number
   bloqueadoHasta: string
   minutosRestantes: number
@@ -63,6 +69,23 @@ export type ProductoEnriquecido = {
   precio: number
   calificacion: number
   imagenUrl: string
+  /* Razón de la recomendación, si el servicio la informa. */
+  motivo?: string
+}
+
+/* Producto del catálogo de ms-productos :8086. */
+export type ProductoCatalogo = {
+  id: string
+  nombre: string
+  marca: string
+  categoria: string
+  categoriaEtiqueta: string
+  subcategoria: string
+  precio: number
+  stock: number
+  calificacion: number
+  imagenUrl: string | null
+  descripcion: string
 }
 
 export type ProductoVisto = {
@@ -72,11 +95,28 @@ export type ProductoVisto = {
   vistas: number
 }
 
+export type SerieMinuto = {
+  inicio: number
+  interacciones: number
+}
+
+export type Embudo = {
+  vistas: number
+  carritos: number
+  compras: number
+}
+
 export type Metricas = {
-  productosMasVistos: ProductoVisto[]
+  tipo?: string
+  timestamp?: number
   interaccionesPorMinuto: number
+  serieMinutos: SerieMinuto[]
+  topProductos: ProductoVisto[]
   usuariosActivos: number
+  embudo: Embudo
+  porTipo: Record<string, number>
   totalInteracciones: number
+  productosMasVistos: ProductoVisto[]
 }
 
 /* ---- ms-kafka-admin :8085 ---- */
@@ -145,4 +185,85 @@ export type ConsumerGroupLag = {
   groupId: string
   lagTotal: number
   detalles: LagDetalle[]
+}
+
+/* ---- ms-rabbit-admin :8089 ---- */
+export type RabbitNodo = {
+  nombre: string
+  tipo: string
+  corriendo: boolean
+  memoriaUsadaBytes: number
+  memoriaLimiteBytes: number
+  porcentajeMemoria: number
+  alarmaMemoria: boolean
+  discoLibreBytes: number
+  discoLimiteBytes: number
+  alarmaDisco: boolean
+  particiones: string[]
+  uptimeMs: number
+}
+
+export type RabbitCluster = {
+  nombreCluster: string
+  totalNodos: number
+  nodosCorriendo: number
+  hayQuorum: boolean
+  hayParticiones: boolean
+  hayAlarmas: boolean
+  nodos: RabbitNodo[]
+  fuente: string
+  consultadoEn: number
+}
+
+export type RabbitCola = {
+  nombre: string
+  vhost: string
+  tipo: string
+  durable: boolean
+  autoEliminar: boolean
+  exclusiva: boolean
+  mensajes: number
+  mensajesListos: number
+  mensajesSinConfirmar: number
+  consumidores: number
+  estado: string
+  nodo: string
+  miembros: string[]
+  miembrosEnLinea: string[]
+  argumentos: Record<string, unknown>
+  protegida: boolean
+}
+
+export type RabbitExchange = {
+  nombre: string
+  vhost: string
+  tipo: string
+  durable: boolean
+  autoEliminar: boolean
+  interno: boolean
+  argumentos: Record<string, unknown>
+  protegido: boolean
+}
+
+export type RabbitBinding = {
+  origen: string
+  destino: string
+  tipoDestino: string
+  routingKey: string
+  argumentos: Record<string, unknown>
+  propertiesKey: string
+  protegido: boolean
+}
+
+/* ---- ms-notificaciones :8088 ---- */
+export type NotificacionFallida = {
+  id: number
+  messageId: string
+  colaOrigen: string
+  exchangeOrigen: string
+  routingKeys: string
+  motivo: string
+  conteo: number
+  cuerpo: string
+  recibidoEn: string
 }

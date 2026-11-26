@@ -5,10 +5,15 @@ import { Badge, Button, Card, Empty, Field, Input, Metric, Notice, Table } from 
 import { useLog } from '../hooks/useLog'
 import { pagos } from '../lib/api'
 import { fechaHora } from '../lib/format'
-import type { AlertaFraude, ResumenAlertas } from '../lib/types'
-import { TARJETAS_PRUEBA } from '../lib/catalogo'
+import type { AlertaFraude, PeticionPago, ResumenAlertas } from '../lib/types'
 
 type Aviso = { estado: 'ok' | 'bad' | 'warn'; titulo: string; detalle?: React.ReactNode }
+
+/* Tarjetas de prueba del ambiente de integración de Transbank. Sin dinero real. */
+const TARJETAS_PRUEBA = [
+  { marca: 'VISA', numero: '4051 8856 0044 6623', cvv: '123', aprueba: true },
+  { marca: 'MASTERCARD', numero: '5186 0595 5959 0568', cvv: '123', aprueba: false },
+]
 
 /* Transbank EXIGE POST con token_ws en un formulario: un redirect GET a la URL
    de Webpay se rechaza. Se navega en la MISMA pestaña para que la vuelta caiga
@@ -29,11 +34,17 @@ function irAWebpay(url: string, token: string) {
 export function PagosScreen() {
   const [cliente, setCliente] = useState('ismael')
   const [monto, setMonto] = useState('15000')
+  /* Modo simulado: mismo endpoint, pero el número de tarjeta viaja en el cuerpo.
+     Es lo que hace que el antifraude cuente por tarjeta en la demostración. */
+  const [pasarela, setPasarela] = useState<'webpay' | 'simulada'>('simulada')
+  const [tarjeta, setTarjeta] = useState('4111111111111111')
   const [enviando, setEnviando] = useState(false)
   const [rafagaEnCurso, setRafagaEnCurso] = useState(false)
   const [aviso, setAviso] = useState<Aviso | null>(null)
   const [resumen, setResumen] = useState<ResumenAlertas | null>(null)
   const { lineas, log, limpiar } = useLog()
+
+  const simulada = pasarela === 'simulada'
 
   const cargarAlertas = useCallback(async () => {
     try {
@@ -53,6 +64,13 @@ export function PagosScreen() {
     (a) => a.idCliente === cliente.trim() && a.minutosRestantes > 0,
   )
 
+  /* Arma el cuerpo: en modo simulado se agrega la tarjeta; en Webpay no. */
+  function armarPeticion(clientId: string, amount: number, transactionId: string): PeticionPago {
+    const peticion: PeticionPago = { clientId, amount, transactionId }
+    if (simulada) peticion.tarjeta = tarjeta.trim()
+    return peticion
+  }
+
   async function pagar() {
     const cli = cliente.trim()
     const importe = Number(monto)
@@ -64,18 +82,22 @@ export function PagosScreen() {
       setAviso({ estado: 'bad', titulo: 'Monto inválido', detalle: 'El backend valida @Positive: debe ser mayor que 0.' })
       return
     }
+    if (simulada && !tarjeta.trim()) {
+      setAviso({ estado: 'bad', titulo: 'Falta la tarjeta', detalle: 'En modo simulado el número de tarjeta es obligatorio.' })
+      return
+    }
 
     const tx = `TX-${Date.now()}`
     setEnviando(true)
     setAviso(null)
-    log(`POST /api/pagos/iniciar  cliente=${cli} monto=${importe} tx=${tx}`)
+    log(`POST /api/pagos/iniciar  cliente=${cli} monto=${importe} tx=${tx} modo=${pasarela}`)
 
     try {
-      const { status, body } = await pagos.iniciar({ clientId: cli, amount: importe, transactionId: tx })
+      const { status, body } = await pagos.iniciar(armarPeticion(cli, importe, tx))
 
       if (status === 429) {
         setAviso({ estado: 'bad', titulo: 'Bloqueado por el antifraude', detalle: body.message })
-        log('HTTP 429 — cliente bloqueado por velocidad de intentos', 'error')
+        log('HTTP 429 — bloqueado por más de 3 intentos con la misma tarjeta', 'error')
         void cargarAlertas()
       } else if (status === 400) {
         setAviso({
@@ -116,22 +138,23 @@ export function PagosScreen() {
     }
   }
 
-  /* La ráfaga es la prueba de la regla antifraude: 3 intentos del mismo cliente
-     en menos de 10 s deben devolver 429 y bloquearlo 30 minutos. */
+  /* La ráfaga es la prueba de la regla antifraude: más de 3 intentos con la
+     misma tarjeta en menos de 10 s deben devolver 429 y bloquearla 30 minutos. */
   async function rafaga() {
     const cli = cliente.trim() || 'ismael'
+    const importe = Number(monto) || 1000
+    if (simulada && !tarjeta.trim()) {
+      setAviso({ estado: 'bad', titulo: 'Falta la tarjeta', detalle: 'En modo simulado la ráfaga necesita una tarjeta.' })
+      return
+    }
     setRafagaEnCurso(true)
     setAviso(null)
-    log(`ráfaga de 4 intentos con el mismo clientId (${cli})`)
+    log(`ráfaga de 4 intentos con la misma tarjeta (cliente ${cli}, modo ${pasarela})`)
 
     const codigos: (number | 'err')[] = []
     for (let i = 1; i <= 4; i++) {
       try {
-        const { status } = await pagos.iniciar({
-          clientId: cli,
-          amount: Number(monto) || 1000,
-          transactionId: `TXB-${Date.now()}-${i}`,
-        })
+        const { status } = await pagos.iniciar(armarPeticion(cli, importe, `TXB-${Date.now()}-${i}`))
         codigos.push(status)
         log(`intento ${i} → HTTP ${status}`, status === 429 ? 'error' : 'ok')
       } catch {
@@ -145,18 +168,29 @@ export function PagosScreen() {
       estado: bloqueo ? 'ok' : 'warn',
       titulo: `Resultado de la ráfaga: ${codigos.join(' · ')}`,
       detalle: bloqueo
-        ? 'El antifraude bloqueó al cliente, que es el comportamiento esperado.'
+        ? 'El antifraude bloqueó la tarjeta, que es el comportamiento esperado.'
         : 'No hubo bloqueo. Revisá que el consumidor del tópico payment-attempts esté procesando.',
     })
     setRafagaEnCurso(false)
     void cargarAlertas()
   }
 
+  async function resetAlertas() {
+    try {
+      const msg = await pagos.resetAlertas()
+      log(`DELETE /api/alertas → ${msg}`, 'ok')
+      setAviso({ estado: 'ok', titulo: 'Antifraude reseteado', detalle: msg })
+      void cargarAlertas()
+    } catch (e) {
+      log(`error al resetear: ${(e as Error).message}`, 'error')
+    }
+  }
+
   return (
     <div className="stack">
       <PageHeader
         titulo="Pagos"
-        bajada="Webpay Plus sobre Transbank, con detección de fraude por velocidad de intentos. Cada intento se publica en el tópico payment-attempts."
+        bajada="Webpay Plus sobre Transbank, con detección de fraude por velocidad de intentos sobre la tarjeta. Cada intento se publica en el tópico payment-attempts."
         accion={
           bloqueadoEsteCliente ? (
             <Badge estado="bad">cliente bloqueado · {bloqueadoEsteCliente.minutosRestantes} min</Badge>
@@ -173,10 +207,30 @@ export function PagosScreen() {
           estado={resumen && resumen.bloqueosActivos > 0 ? 'bad' : undefined}
         />
         <Metric etiqueta="Clientes vigilados" valor={resumen?.totalClientesVigilados ?? '—'} />
-        <Metric etiqueta="Umbral antifraude" valor="3" sufijo="intentos / 10 s" nota="bloqueo de 30 minutos" />
+        <Metric etiqueta="Umbral por tarjeta" valor=">3" sufijo="intentos / 10 s" nota="bloqueo de 30 minutos" />
       </div>
 
-      <Card titulo="Iniciar un pago" descripcion="El antifraude cuenta por clientId: con identificadores distintos el contador arranca de cero.">
+      <Card
+        titulo="Iniciar un pago"
+        descripcion="El antifraude cuenta por tarjeta: con tarjetas distintas el contador arranca de cero."
+      >
+        <div className="row" style={{ marginBottom: 'var(--s4)', alignItems: 'center' }}>
+          <Button
+            variante={simulada ? 'primario' : 'ghost'}
+            onClick={() => setPasarela('simulada')}
+            aria-pressed={simulada}
+          >
+            Simulada
+          </Button>
+          <Button variante={simulada ? 'ghost' : 'primario'} onClick={() => setPasarela('webpay')} aria-pressed={!simulada}>
+            Webpay
+          </Button>
+          <span className="muted">
+            {simulada
+              ? 'Envía el número de tarjeta junto con el pago.'
+              : 'Sin tarjeta en el cuerpo: Transbank pide los datos en su formulario.'}
+          </span>
+        </div>
         <div className="row">
           <Field etiqueta="clientId" ancho={200}>
             <Input value={cliente} onChange={(e) => setCliente(e.target.value)} placeholder="ismael" />
@@ -184,11 +238,19 @@ export function PagosScreen() {
           <Field etiqueta="Monto (CLP)" ancho={160}>
             <Input type="number" min={1} value={monto} onChange={(e) => setMonto(e.target.value)} />
           </Field>
+          {simulada && (
+            <Field etiqueta="Tarjeta" ancho={220}>
+              <Input value={tarjeta} onChange={(e) => setTarjeta(e.target.value)} placeholder="4111111111111111" />
+            </Field>
+          )}
           <Button variante="primario" onClick={pagar} disabled={enviando || rafagaEnCurso}>
-            {enviando ? 'Verificando…' : 'Pagar con Webpay'}
+            {enviando ? 'Verificando…' : simulada ? 'Pagar (simulado)' : 'Pagar con Webpay'}
           </Button>
           <Button onClick={rafaga} disabled={enviando || rafagaEnCurso}>
             {rafagaEnCurso ? 'Enviando ráfaga…' : 'Ráfaga de 4 (probar bloqueo)'}
+          </Button>
+          <Button variante="peligro" onClick={resetAlertas} disabled={enviando || rafagaEnCurso}>
+            Reset antifraude
           </Button>
         </div>
 
@@ -221,9 +283,10 @@ export function PagosScreen() {
           {!resumen || resumen.alertas.length === 0 ? (
             <Empty>Ningún cliente bloqueado en este momento.</Empty>
           ) : (
-            <Table cols={['Cliente', { t: 'Intentos', num: true }, { t: 'Expira en', num: true }, 'Detectado']}>
+            <Table cols={['Tarjeta', 'Cliente', { t: 'Intentos', num: true }, { t: 'Expira en', num: true }, 'Detectado']}>
               {resumen.alertas.map((a: AlertaFraude) => (
-                <tr key={a.idCliente}>
+                <tr key={`${a.huellaTarjeta ?? ''}-${a.idCliente}`}>
+                  <td className="mono">{a.ultimos4 ? `****${a.ultimos4}` : (a.huellaTarjeta ?? '—')}</td>
                   <td className="mono">{a.idCliente}</td>
                   <td className="num">{a.cantidadIntentos}</td>
                   <td className="num">{a.minutosRestantes > 0 ? `${a.minutosRestantes} min` : '—'}</td>
